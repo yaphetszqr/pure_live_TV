@@ -14,6 +14,7 @@ import 'package:media_core_ijk_player/media_core_ijk_player.dart';
 import 'package:media_core_fvp/media_core_fvp.dart';
 import 'package:media_core_better_player/media_core_better_player.dart';
 import 'package:media_kit_video/media_kit_video.dart' as mkv;
+import 'native/native_video_output.dart';
 
 /// Host-owned media_kit (libmpv) configuration.
 ///
@@ -112,8 +113,12 @@ final class MediaKitHostConfig {
 
     final options = <EngineOption>[
       EngineOption('protocol_whitelist', _protocolWhitelist),
-      EngineOption('demuxer-lavf-probesize', '2097152'),
-      EngineOption('demuxer-lavf-analyzeduration', '2'),
+      // Probing is the slowest part of opening a live room: a server pushes
+      // its cached GOP in a burst, the data is there within a second, and
+      // the first frame then waited for 2 s of stream to be analysed. 1 s and
+      // 1 MiB still cover streams that announce their audio track late.
+      EngineOption('demuxer-lavf-probesize', '1048576'),
+      EngineOption('demuxer-lavf-analyzeduration', '1'),
 
       // Live buffer contract: bounded by time and bytes, refill-then-resume.
       EngineOption('force-seekable', 'yes'),
@@ -173,6 +178,15 @@ final class MediaKitHostConfig {
       options.add(const EngineOption('hwdec', 'no'));
     }
 
+    // vo=mediacodec_embed decodes into the native surface and needs the plain
+    // MediaCodec decoder; a copy-back or software choice here would override
+    // the surface's own setting and leave the picture black.
+    if (NativeVideoOutput.active) {
+      options
+        ..removeWhere((option) => option.key == 'hwdec')
+        ..add(const EngineOption('hwdec', 'mediacodec'));
+    }
+
     if (platform == TargetPlatform.windows && settings.enableRtxVsr) {
       options.addAll([
         const EngineOption('hwdec', 'd3d11va'),
@@ -213,6 +227,10 @@ final class MediaKitHostConfig {
     );
 
     adapter.applyEngineOptions(buildEngineOptions());
+
+    // Before its source opens: the native surface has to be wired before mpv
+    // starts decoding, or the decoder is rebuilt mid-stream.
+    NativeVideoOutput.instance.adapterCreated(adapter);
 
     return adapter;
   }

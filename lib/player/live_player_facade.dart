@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:rxdart/rxdart.dart' hide Rx;
 import 'package:media_core/media_core.dart';
 import 'package:media_core_live/media_core_live.dart';
-import 'package:media_core_media_kit/media_core_media_kit.dart' show kMediaKitCustomInputKey;
+import 'package:media_core_media_kit/media_core_media_kit.dart' show kMediaKitCustomInputKey, MediaKitPlayerAdapter;
+import 'native/native_video_output.dart';
 import '../services/settings/settings.dart';
 import 'core/playback_header_resolver.dart';
 import 'core/flv_legacy_hevc_relay.dart';
@@ -496,6 +497,11 @@ final class LivePlayerFacade {
   /// Makes sure the current controller handle has its adapter events bound.
   void _bindCurrentHandle() {
     if (_disposed) return;
+    // The committed player is the one the room shows; after an engine switch
+    // it takes the native surface over from the retired one.
+    if (_controller.handle?.adapter case final MediaKitPlayerAdapter adapter) {
+      NativeVideoOutput.instance.claim(adapter);
+    }
 
     final handle = _controller.handle;
 
@@ -925,9 +931,10 @@ final class LivePlayerFacade {
   ///
   /// Returns a black placeholder while no player is active.
   Widget getVideoWidget(int fitIndex, {Widget? controls, required List<BoxFit> fitList}) {
-    return Container(
-      color: Colors.black,
-      child: StreamBuilder<ValueKey>(
+    // The native surface lives outside the per-engine subtree: it is mounted
+    // with the room, before any player exists, and outlives engine switches.
+    final bool native = NativeVideoOutput.active;
+    final Widget adapterView = StreamBuilder<ValueKey>(
         stream: videoKey.stream,
         initialData: videoKey.value,
         builder: (context, _) {
@@ -935,18 +942,34 @@ final class LivePlayerFacade {
           final adapter = handle?.adapter;
 
           if (adapter == null) {
-            return const ColoredBox(color: Colors.black);
+            // Over the native surface stay clear: the player draws into it
+            // before the controller hands the handle over.
+            return native ? const SizedBox.expand() : const ColoredBox(color: Colors.black);
           }
 
           return KeyedSubtree(key: ValueKey('${videoKey.value}_${adapter.id}'), child: _buildAdapterView(adapter));
         },
-      ),
+    );
+    return Container(
+      color: Colors.black,
+      child: native
+          ? Stack(fit: StackFit.expand, children: [const NativeVideoSurfaceHost(), adapterView])
+          : adapterView,
     );
   }
 
   /// Builds the live surface of [adapter].
   Widget _buildAdapterView(PlayerAdapter adapter) {
+    // Native video output: the room's NativeVideoSurfaceHost, below this
+    // subtree, shows the picture; this layer stays transparent over it.
+    if (NativeVideoOutput.active && adapter is MediaKitPlayerAdapter && adapter.available) {
+      return const SizedBox.expand();
+    }
+
     if (adapter case final PlayerVideo video) {
+      // The native surface this player rendered through earlier left the
+      // texture output idle; it has to draw again before the texture is shown.
+      if (adapter is MediaKitPlayerAdapter) NativeVideoOutput.instance.restoreTextureIfNeeded(adapter);
       return video.build();
     }
 

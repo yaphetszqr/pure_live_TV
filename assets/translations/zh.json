@@ -417,6 +417,8 @@
   "compat_mode": "兼容模式",
   "compat_mode_enabled_subtitle": "已启用 MediaCodec 兼容模式",
   "compat_mode_subtitle": "旧设备播放卡顿时请尝试开启",
+  "native_video_output": "原生视频输出（实验）",
+  "native_video_output_subtitle": "画面直接交给电视的硬件视频层，2K/4K 直播不再被压缩到 1080p。重新进入直播间后生效",
   "concurrent_tasks": "个任务",
   "config_modules": "配置模块",
   "config_preview": "配置预览",

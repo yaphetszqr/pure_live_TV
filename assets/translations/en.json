@@ -421,6 +421,8 @@
   "compat_mode": "Compatibility Mode",
   "compat_mode_enabled_subtitle": "MediaCodec compatibility mode is enabled",
   "compat_mode_subtitle": "Try enabling this if playback lags on older devices",
+  "native_video_output": "Native video output (experimental)",
+  "native_video_output_subtitle": "Hands the picture to the TV's hardware video layer so 2K/4K streams are not squeezed to 1080p. Takes effect after reopening the room",
   "concurrent_tasks": "tasks",
   "config_modules": "Config Modules",
   "config_preview": "Config Preview",

@@ -10,6 +10,10 @@ class MainActivity : FlutterActivity() {
         if (nativeHttpChannel == null) {
             nativeHttpChannel = NativeHttpChannel(flutterEngine.dartExecutor.binaryMessenger)
         }
+        flutterEngine.platformViewsController.registry.registerViewFactory(
+            NativeVideoSurfaceFactory.VIEW_TYPE,
+            NativeVideoSurfaceFactory(flutterEngine.dartExecutor.binaryMessenger),
+        )
     }
 
     override fun onDestroy() {

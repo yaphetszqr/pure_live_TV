@@ -346,14 +346,30 @@ class _HomePageState extends ConsumerState<HomePage> {
     final isCurrentCacheable = cacheableTypes.contains(currentMenuType);
     final stackIndex = cacheableTypes.indexOf(currentMenuType);
 
-    // The home page sits at the route root, so a back press here means the
-    // user wants out — a second press confirms it.
+    // The home page sits at the route root. In live mode back first returns to
+    // follows, the landing page; from there a press arms the exit and a second
+    // one confirms it.
+    final int followsIndex = TvMenuType.favorite.value;
+    final bool backGoesToFollows =
+        isLiveMode && currentIndex != followsIndex && visibleIndexes.contains(followsIndex);
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        if (_backExit.onBackPressed()) exit(0);
-        ToastUtil.show(i18nOr('press_back_again_to_exit', '再按一次返回键退出'));
+        if (backGoesToFollows) {
+          // The index listener above moves the remote's focus to the entry.
+          ref.read(sideMenuIndexProvider.notifier).changeIndex(followsIndex);
+          _backExit.consumed();
+          return;
+        }
+        switch (_backExit.onBackPressed()) {
+          case BackPressResult.exit:
+            exit(0);
+          case BackPressResult.armed:
+            ToastUtil.show(i18nOr('press_back_again_to_exit', '再按一次返回键退出'));
+          case BackPressResult.ignored:
+            break;
+        }
       },
       // The opening highlight claims the selected entry's own node, so the app
       // opens with the remote on follows (or whatever the menu lands on) instead of

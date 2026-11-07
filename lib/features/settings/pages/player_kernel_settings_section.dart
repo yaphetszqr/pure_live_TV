@@ -5,6 +5,7 @@ import 'package:pure_live/services/index.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:pure_live/exports/package_export.dart';
 import 'package:pure_live/app/router/app/app_router.dart';
+import 'package:pure_live/player/native/native_video_output.dart';
 
 /// player engine settings.
 ///
@@ -92,6 +93,17 @@ class PlayerKernelSettingsSectionPage extends ConsumerWidget {
               icon: playerState.playerCompatMode ? Remix.shield_check_line : Remix.shield_line,
               value: playerState.playerCompatMode,
               onChanged: (v) => player.updateSettings(playerState.copyWith(playerCompatMode: v)),
+            ),
+          if (Platform.isAndroid)
+            ValueListenableBuilder<bool>(
+              valueListenable: NativeVideoOutput.enabled,
+              builder: (context, enabled, _) => TvSettingsSwitchTile(
+                title: i18n('native_video_output'),
+                subtitle: i18n('native_video_output_subtitle'),
+                icon: Remix.hd_line,
+                value: enabled,
+                onChanged: (v) => unawaited(NativeVideoOutput.setEnabled(v)),
+              ),
             ),
           SizedBox(height: 8.ts(context)),
           TvSettingsGroupTitle(title: i18n('mpv_advanced_settings')),

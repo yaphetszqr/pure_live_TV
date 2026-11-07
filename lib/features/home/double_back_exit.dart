@@ -1,3 +1,15 @@
+/// What a back press on the home page amounts to.
+enum BackPressResult {
+  /// A repeat callback of a press already handled: do nothing.
+  ignored,
+
+  /// The first press: tell the user to press again.
+  armed,
+
+  /// The second press inside the window: leave the app.
+  exit,
+}
+
 /// Decides whether a back press on the home page should leave the app: the
 /// first press arms it, a second one inside [window] exits.
 class DoubleBackExit {
@@ -14,18 +26,26 @@ class DoubleBackExit {
 
   final DateTime Function() _clock;
   DateTime? _armedAt;
+  DateTime? _consumedAt;
 
-  /// True when this press should exit. False means the caller should tell the
-  /// user to press again.
-  bool onBackPressed() {
+  BackPressResult onBackPressed() {
     final now = _clock();
+    final consumedAt = _consumedAt;
+    if (consumedAt != null && now.difference(consumedAt) < samePressGap) return BackPressResult.ignored;
     final armedAt = _armedAt;
     if (armedAt != null) {
       final elapsed = now.difference(armedAt);
-      if (elapsed < samePressGap) return false;
-      if (elapsed <= window) return true;
+      if (elapsed < samePressGap) return BackPressResult.ignored;
+      if (elapsed <= window) return BackPressResult.exit;
     }
     _armedAt = now;
-    return false;
+    return BackPressResult.armed;
+  }
+
+  /// The press was used for something else (going back to follows). The
+  /// count starts over, and repeat callbacks of that same press are ignored.
+  void consumed() {
+    _armedAt = null;
+    _consumedAt = _clock();
   }
 }
