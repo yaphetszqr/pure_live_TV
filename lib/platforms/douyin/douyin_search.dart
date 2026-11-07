@@ -8,6 +8,14 @@ import 'package:meta/meta.dart';
 import 'package:pure_live/services/settings/settings.dart';
 import 'package:pure_live/core/models/index.dart';
 import 'package:pure_live/core/i18n/locale_helper.dart';
+/// Douyin refused the search until the user signs in.
+class DouyinSearchLoginRequired implements Exception {
+  const DouyinSearchLoginRequired();
+
+  @override
+  String toString() => i18n('douyin_search_login_required');
+}
+
 class DouyinSearch {
   static const String host = 'https://live.douyin.com';
   static const String userAgent =
@@ -25,10 +33,8 @@ class DouyinSearch {
   static String _configuredCookieSnapshot = '';
 
   static Future<String> _getCookie() async {
-    if (_cookie.isNotEmpty) {
-      return _cookie;
-    }
-
+    // Read the setting before any cache: an anonymous cookie fetched earlier
+    // must not hide an account the user has just signed in with.
     final configuredCookie = SettingsService.to.cookieManager.douyinCookie.v.trim();
 
     if (configuredCookie.isNotEmpty) {
@@ -42,6 +48,10 @@ class DouyinSearch {
     if (_configuredCookieSnapshot.isNotEmpty) {
       _configuredCookieSnapshot = '';
       _cookie = '';
+    }
+
+    if (_cookie.isNotEmpty) {
+      return _cookie;
     }
 
     try {
@@ -319,6 +329,56 @@ class DouyinSearch {
   @visibleForTesting
   static List<LiveRoom> parseSearchPayloadForTesting(dynamic payload) => _extractSearchVideos(payload);
 
+  /// Douyin answers anonymous searches with this code ("log in to continue").
+  static const int loginRequiredStatusCode = 2483;
+
+  static void _throwIfLoginRequired(dynamic result) {
+    if (_mapValue(result, 'status_code') == loginRequiredStatusCode) {
+      throw const DouyinSearchLoginRequired();
+    }
+  }
+
+  /// One entry per streamer: a streamer can surface through several results,
+  /// and rooms without a name cannot be told apart in the anchor grid.
+  @visibleForTesting
+  static List<LiveAnchorItem> anchorsFromRooms(Iterable<LiveRoom> rooms) {
+    final seen = <String>{};
+    return [
+      for (final room in rooms)
+        if (room.nick.isNotEmpty && seen.add(room.roomId))
+          LiveAnchorItem(
+            roomId: room.roomId,
+            avatar: room.avatar,
+            userName: room.nick,
+            liveStatus: room.liveStatus == LiveStatus.live,
+          ),
+    ];
+  }
+
+  /// Streamers currently live under [keyword]. Douyin's search only returns
+  /// live rooms, so offline streamers cannot be found this way. The partition
+  /// fallback of [search] is skipped: it matches category names, and would
+  /// list unrelated streamers for a name search.
+  static Future<List<LiveAnchorItem>> searchAnchors(String keyword, {int page = 1, int pageSize = 30}) async {
+    final kw = keyword.trim();
+    if (kw.isEmpty) return [];
+
+    final normalizedPage = page < 1 ? 1 : page;
+    final normalizedPageSize = pageSize.clamp(1, 50).toInt();
+
+    for (final api in [_searchByLiveApi, _searchByGeneralApi]) {
+      try {
+        final anchors = anchorsFromRooms(await api(kw, normalizedPage, normalizedPageSize));
+        if (anchors.isNotEmpty) return anchors;
+      } on DouyinSearchLoginRequired {
+        rethrow;
+      } catch (e) {
+        CoreLog.error(e);
+      }
+    }
+    return [];
+  }
+
   static Future<List<LiveRoom>> _searchByLiveApi(String keyword, int page, int pageSize) async {
     final count = pageSize.clamp(1, 50).toInt();
     final offset = count * (page - 1);
@@ -346,6 +406,7 @@ class DouyinSearch {
       header: headers,
     );
 
+    _throwIfLoginRequired(result);
     if (result['status_code'] != 0) return [];
     return _extractSearchVideos(result['data']);
   }
@@ -373,6 +434,7 @@ class DouyinSearch {
       header: headers,
     );
 
+    _throwIfLoginRequired(result);
     if (result['status_code'] != 0) return [];
     return _extractSearchVideos(result['data']);
   }

@@ -2,13 +2,16 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
 import 'package:bonsoir/bonsoir.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/widgets.dart';
 import 'package:pure_live/core/utils/hive_pref_util.dart';
+import 'package:pure_live/core/utils/lan_address.dart';
 import 'package:pure_live/core/utils/toast_util.dart';
 import 'package:pure_live/core/utils/date_time_utils.dart';
 import 'package:pure_live/core/i18n/locale_helper.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:pure_live/app/bootstrap/app_navigator.dart';
+import 'package:pure_live/domains/device/tv_remote_receiver.dart';
 import 'package:pure_live/services/backup/backup_controller.dart';
 import 'package:pure_live/features/settings/pages/backup_module_page.dart';
 import 'package:pure_live/services/remote_sync/remote_sync_device.dart';
@@ -71,6 +74,8 @@ class RemoteSyncController extends _$RemoteSyncController {
   BonsoirDiscovery? _discovery;
   StreamSubscription<BonsoirDiscoveryEvent>? _discoverySub;
   Timer? _cleanupTimer;
+  StreamSubscription<List<ConnectivityResult>>? _networkSub;
+  Timer? _networkDebounce;
 
   final List<RemoteSyncDevice> _devices = [];
   final Set<String> _localIps = {};
@@ -164,6 +169,7 @@ class RemoteSyncController extends _$RemoteSyncController {
       }
       _running = true;
       await _startDiscoveryAndBroadcast();
+      _watchNetwork();
       _publish();
     } catch (e) {
       _lastError = '$e';
@@ -177,6 +183,11 @@ class RemoteSyncController extends _$RemoteSyncController {
     debugPrint('[sync] stop() called, running=$_running');
     _running = false;
     _pairingCode = '';
+
+    _networkDebounce?.cancel();
+    _networkDebounce = null;
+    await _networkSub?.cancel();
+    _networkSub = null;
 
     _cleanupTimer?.cancel();
     _cleanupTimer = null;
@@ -212,58 +223,35 @@ class RemoteSyncController extends _$RemoteSyncController {
 
   Future<void> _refreshNetworkInfo() async {
     try {
-      final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4, includeLoopback: false);
-      final ips = <String>{};
-      String? privateIp;
-      String? fallbackIp;
-      for (final i in interfaces) {
-        for (final a in i.addresses) {
-          final ip = a.address.trim();
-          if (ip.isEmpty || ip.startsWith('127.') || ip.startsWith('169.254.')) continue;
-          if (!_isValidIpv4(ip)) continue;
-          ips.add(ip);
-          fallbackIp ??= ip;
-          if (_isPrivateIpv4(ip) && (privateIp == null || _ipv4Priority(ip) > _ipv4Priority(privateIp))) {
-            privateIp = ip;
-          }
-        }
-      }
+      final ranked = await LanAddress.candidates();
       _localIps
         ..clear()
-        ..addAll(ips);
-
-      // A manual pick (multi-NIC boxes) wins while its interface still exists;
-      // otherwise fall back to the priority guess.
-      final manual = HivePrefUtil.getString('syncSelectedIp');
-      if (manual != null && manual.isNotEmpty && ips.contains(manual)) {
-        _localIp = manual;
-      } else {
-        _localIp = privateIp ?? fallbackIp ?? '';
-      }
+        ..addAll(ranked);
+      _localIp = LanAddress.pick(ranked, HivePrefUtil.getString(LanAddress.selectedIpKey)) ?? '';
     } catch (_) {
       _localIps.clear();
       _localIp = '';
     }
   }
 
-  /// Candidates best-first, for the page's manual selector.
-  List<String> get localIpCandidates {
-    final list = _localIps.toList();
-    list.sort((a, b) {
-      final pri = _ipv4Priority(b).compareTo(_ipv4Priority(a));
-      return pri != 0 ? pri : a.compareTo(b);
-    });
-    return list;
-  }
+  /// Candidates best-first, for the page's manual selector. The set keeps the
+  /// ranked insertion order.
+  List<String> get localIpCandidates => _localIps.toList();
 
   /// Advertises [ip] instead of the auto-picked one. The server binds
   /// 0.0.0.0, so only the advertised address, QR and mDNS TXT change.
   Future<void> selectLocalIp(String ip) async {
     if (!_localIps.contains(ip) || ip == _localIp) return;
-    HivePrefUtil.setString('syncSelectedIp', ip);
+    HivePrefUtil.setString(LanAddress.selectedIpKey, ip);
     _localIp = ip;
     _publish();
-    // Re-advertise the new address over mDNS.
+    // The web remote's QR codes follow the same pick.
+    unawaited(ref.read(tvRemoteReceiverProvider.notifier).refreshAddress());
+    await _rebroadcast();
+  }
+
+  /// Re-advertises the current address over mDNS.
+  Future<void> _rebroadcast() async {
     try {
       await _broadcast?.stop();
       _broadcast = null;
@@ -271,33 +259,21 @@ class RemoteSyncController extends _$RemoteSyncController {
     } catch (_) {}
   }
 
-  bool _isValidIpv4(String ip) {
-    final p = ip.split('.');
-    if (p.length != 4) return false;
-    return p.every((e) {
-      final v = int.tryParse(e);
-      return v != null && v >= 0 && v <= 255;
-    });
+  void _watchNetwork() {
+    _networkSub ??= Connectivity().onConnectivityChanged.listen((_) {
+      // The event can beat DHCP, and one switch fires several events.
+      _networkDebounce?.cancel();
+      _networkDebounce = Timer(const Duration(seconds: 2), () => unawaited(_onNetworkChanged()));
+    }, onError: (Object _) {});
   }
 
-  bool _isPrivateIpv4(String ip) {
-    final p = ip.split('.');
-    if (p.length != 4) return false;
-    final a = int.tryParse(p[0]);
-    final b = int.tryParse(p[1]);
-    if (a == null || b == null) return false;
-    return a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168);
-  }
-
-  int _ipv4Priority(String ip) {
-    if (ip.startsWith('192.168.')) return 3;
-    if (ip.startsWith('10.')) return 2;
-    final p = ip.split('.');
-    if (p.length == 4 && p[0] == '172') {
-      final s = int.tryParse(p[1]);
-      if (s != null && s >= 16 && s <= 31) return 1;
-    }
-    return 0;
+  Future<void> _onNetworkChanged() async {
+    if (_disposed || !_running) return;
+    final previous = _localIp;
+    await _refreshNetworkInfo();
+    if (_disposed || !_running) return;
+    _publish();
+    if (_localIp != previous && _localIp.isNotEmpty) await _rebroadcast();
   }
 
   String? _ipv4Prefix(String ip) {
@@ -596,7 +572,7 @@ class RemoteSyncController extends _$RemoteSyncController {
 
     final name = (attrs['name']?.trim().isNotEmpty == true) ? attrs['name']!.trim() : service.name;
     final ip = _selectIp(service) ?? attrs['ip']?.trim();
-    if (ip == null || !_isValidIpv4(ip)) return;
+    if (ip == null || !LanAddress.isValidIpv4(ip)) return;
     final port = service.port > 0 ? service.port : RemoteSyncProtocol.defaultHttpPort;
 
     final device = RemoteSyncDevice(
@@ -638,7 +614,7 @@ class RemoteSyncController extends _$RemoteSyncController {
   }
 
   String? _selectIp(BonsoirService service) {
-    final addresses = service.hostAddresses.where(_isValidIpv4).toList();
+    final addresses = service.hostAddresses.where(LanAddress.isValidIpv4).toList();
     if (addresses.isNotEmpty) {
       final prefix = _ipv4Prefix(_localIp);
       if (prefix != null) {
@@ -647,12 +623,12 @@ class RemoteSyncController extends _$RemoteSyncController {
         }
       }
       for (final ip in addresses) {
-        if (_isPrivateIpv4(ip)) return ip;
+        if (LanAddress.isPrivateIpv4(ip)) return ip;
       }
       return addresses.first;
     }
     final advertised = service.attributes['ip']?.trim();
-    return (advertised != null && _isValidIpv4(advertised)) ? advertised : null;
+    return (advertised != null && LanAddress.isValidIpv4(advertised)) ? advertised : null;
   }
 
   Future<void> _startBroadcast() async {

@@ -892,9 +892,8 @@ class DouyinSite implements LiveSite, LiveSiteRecordRoomResolver, LiveSiteRoomRe
   }
 
   @override
-  Future<List<LiveAnchorItem>> searchAnchors(String keyword, {int page = 1, int pageSize = 30}) async {
-    throw Exception(i18n('douyin_anchor_search_unsupported'));
-  }
+  Future<List<LiveAnchorItem>> searchAnchors(String keyword, {int page = 1, int pageSize = 30}) =>
+      DouyinSearch.searchAnchors(keyword, page: page, pageSize: pageSize);
 
   @override
   Future<bool> getLiveStatus(LiveRoom room) async {

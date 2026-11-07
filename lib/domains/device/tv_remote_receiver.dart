@@ -2,7 +2,9 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
 import 'package:alfred/alfred.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:pure_live/core/utils/lan_address.dart';
 import 'package:pure_live/exports/package_export.dart';
 import 'package:pure_live/modules/live/iptv/services/iptv_import_manager.dart';
 import 'package:pure_live/services/backup/backup_controller.dart';
@@ -42,8 +44,13 @@ class TvRemoteReceiver extends _$TvRemoteReceiver {
   String get _deviceId => 'pure_live_tv_${Platform.localHostname}';
   String get _deviceName => 'PureLive TV (${Platform.operatingSystem})';
 
-  /// LAN address the server is reachable at; set when it starts listening.
+  /// LAN address the server is reachable at; set when it starts listening and
+  /// kept current by [refreshAddress].
   String _localAddress = '';
+
+  StreamSubscription<List<ConnectivityResult>>? _networkSub;
+  Timer? _networkDebounce;
+  static const Duration _networkSettleDelay = Duration(seconds: 2);
 
   final Map<String, dynamic> _configCache = {
     'douyin_cookie': <String, String>{'ttwid': '', 'cookie': ''},
@@ -255,6 +262,7 @@ class TvRemoteReceiver extends _$TvRemoteReceiver {
       _addLog('Remote service started at $fullUrl');
 
       state = AsyncValue.data(ServerState(isRunning: true, serverUrl: fullUrl, port: port, error: null));
+      _watchNetwork();
     } catch (e) {
       if (!ref.mounted) return;
       if (e.toString().contains('Address already in use') && retry < _maxPortRetry) {
@@ -276,40 +284,37 @@ class TvRemoteReceiver extends _$TvRemoteReceiver {
 
   Future<String?> _getLocalIp() async {
     try {
-      // Multi-NIC boxes surface virtual adapters first (VPN/TUN, bridges,
-      // emulator NAT), so "first non-loopback IPv4" used to advertise a
-      // 10.x address the phone could not reach. Rank the candidates the same
-      // way the LAN-sync service does and honor its manual pick, so the
-      // selector on the device sync page fixes both services' QR codes.
-      final candidates = <String>[];
-      final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4, includeLoopback: false);
-      for (final iface in interfaces) {
-        for (final addr in iface.addresses) {
-          final ip = addr.address;
-          if (!ip.startsWith('127.') && !ip.startsWith('169.254.')) candidates.add(ip);
-        }
-      }
-      if (candidates.isEmpty) return null;
-
-      final manual = HivePrefUtil.getString('syncSelectedIp');
-      if (manual != null && manual.isNotEmpty && candidates.contains(manual)) return manual;
-
-      int score(String ip) {
-        if (ip.startsWith('192.168.')) return 3;
-        if (ip.startsWith('10.')) return 2;
-        if (ip.startsWith('172.')) {
-          final second = int.tryParse(ip.split('.')[1]);
-          if (second != null && second >= 16 && second <= 31) return 1;
-        }
-        return 0;
-      }
-
-      candidates.sort((a, b) => score(b).compareTo(score(a)));
-      return candidates.first;
+      // Shared with the LAN-sync service, so the selector on the device sync
+      // page fixes both services' QR codes.
+      return LanAddress.pick(await LanAddress.candidates(), HivePrefUtil.getString(LanAddress.selectedIpKey));
     } catch (e) {
       _addLog('Failed to read the IP address: $e');
       return null;
     }
+  }
+
+  /// Re-reads the advertised address after a manual pick or a network change.
+  /// The server binds 0.0.0.0, so it keeps listening and only the URL behind
+  /// every QR code moves. Losing the network keeps the last address: there is
+  /// nothing better to show, and the change back triggers another refresh.
+  Future<void> refreshAddress() async {
+    if (!ref.mounted || state.value?.isRunning != true) return;
+    final ip = await _getLocalIp();
+    if (!ref.mounted || ip == null || ip == _localAddress) return;
+    final current = state.value;
+    if (current == null || !current.isRunning) return;
+    _localAddress = ip;
+    final fullUrl = 'http://$ip:${current.port}';
+    _addLog('Remote service address changed to $fullUrl');
+    state = AsyncValue.data(current.copyWith(serverUrl: fullUrl));
+  }
+
+  void _watchNetwork() {
+    _networkSub ??= Connectivity().onConnectivityChanged.listen((_) {
+      // The event can beat DHCP, and one switch fires several events.
+      _networkDebounce?.cancel();
+      _networkDebounce = Timer(_networkSettleDelay, () => unawaited(refreshAddress()));
+    }, onError: (Object _) {});
   }
 
   void _setupCors() {
@@ -953,6 +958,11 @@ class TvRemoteReceiver extends _$TvRemoteReceiver {
   }
 
   Future<void> stopServer() async {
+    _networkDebounce?.cancel();
+    _networkDebounce = null;
+    await _networkSub?.cancel();
+    _networkSub = null;
+
     for (var client in _wsClients) {
       await client.close();
     }

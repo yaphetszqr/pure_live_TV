@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:pure_live/services/index.dart';
 import 'package:pure_live/platforms/sites.dart';
 import 'package:pure_live/exports/package_export.dart';
@@ -6,6 +7,7 @@ import 'package:pure_live/platforms/douyu/douyu_utils.dart';
 import 'package:pure_live/domains/device/tv_remote_receiver.dart';
 import 'package:pure_live/domains/device/models/server_state.dart';
 import 'package:pure_live/features/settings/pages/account_settings_section.dart';
+import 'package:pure_live/features/settings/pages/douyin_qr_login_page.dart';
 
 /// One platform's cookie page: the cookie itself is entered on the phone.
 ///
@@ -31,6 +33,10 @@ class _AccountCookiePageState extends ConsumerState<AccountCookiePage> {
   String _message = '';
 
   late final bool _isDouyu = widget.platform.siteId == Sites.douyuSite;
+
+  /// Scan login runs Douyin's page in a WebView, which only exists on Android
+  /// here. Everywhere else the phone page stays the only way in.
+  late final bool _canScanDouyin = widget.platform.siteId == Sites.douyinSite && Platform.isAndroid;
 
   @override
   void initState() {
@@ -94,6 +100,14 @@ class _AccountCookiePageState extends ConsumerState<AccountCookiePage> {
     setState(() {
       _message = _isDouyu ? _douyuSessionSummary('') : i18n('clear_success');
     });
+  }
+
+  Future<void> _scanDouyinLogin() async {
+    final bool? signedIn = await Navigator.of(
+      context,
+    ).push<bool>(MaterialPageRoute(builder: (_) => const DouyinQrLoginPage()));
+    if (signedIn != true || !mounted) return;
+    setState(() => _message = i18n('douyin_qr_login_success'));
   }
 
   // ---------------------------------------------------------------------------
@@ -289,6 +303,13 @@ class _AccountCookiePageState extends ConsumerState<AccountCookiePage> {
                 spacing: 20.ts(context),
                 runSpacing: 12.ts(context),
                 children: [
+                  if (_canScanDouyin)
+                    TvButton(
+                      title: i18n('douyin_qr_login'),
+                      size: TvButtonSize.medium,
+                      icon: Icon(Icons.qr_code_scanner_rounded, size: 20.ts(context)),
+                      onTap: () => unawaited(_scanDouyinLogin()),
+                    ),
                   if (_isDouyu)
                     TvButton(
                       title: i18n('douyu_cookie_refresh_now'),

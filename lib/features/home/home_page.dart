@@ -1,3 +1,4 @@
+import 'dart:io' show exit;
 import 'package:dpad/dpad.dart';
 import 'package:pure_live/modules/vod/index.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -12,7 +13,7 @@ import 'package:pure_live/modules/music/music_section_view.dart';
 import 'package:pure_live/modules/video/video_section_view.dart';
 import 'package:pure_live/features/home/home_update_dialog.dart';
 import 'package:pure_live/modules/live/history/history_page.dart';
-import 'package:pure_live/features/home/exit_confirm_dialog.dart';
+import 'package:pure_live/features/home/double_back_exit.dart';
 import 'package:pure_live/modules/live/search/tv_search_page.dart';
 import 'package:pure_live/features/settings/tv_settings_page.dart';
 import 'package:pure_live/modules/live/favorite/favorite_page.dart';
@@ -31,6 +32,8 @@ class HomePage extends ConsumerStatefulWidget {
 }
 
 class _HomePageState extends ConsumerState<HomePage> {
+  final DoubleBackExit _backExit = DoubleBackExit();
+
   /// One stable node for the mode switch button, so the opening highlight can
   /// claim it when a non-live mode is active.
   final FocusNode _modeFocusNode = FocusNode();
@@ -344,12 +347,13 @@ class _HomePageState extends ConsumerState<HomePage> {
     final stackIndex = cacheableTypes.indexOf(currentMenuType);
 
     // The home page sits at the route root, so a back press here means the
-    // user wants out — ask before leaving, with the donation note attached.
+    // user wants out — a second press confirms it.
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        showExitConfirmDialog(context, ref);
+        if (_backExit.onBackPressed()) exit(0);
+        ToastUtil.show(i18nOr('press_back_again_to_exit', '再按一次返回键退出'));
       },
       // The opening highlight claims the selected entry's own node, so the app
       // opens with the remote on follows (or whatever the menu lands on) instead of
